@@ -2,7 +2,7 @@
 import { useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { Upload, FileText, CheckCircle, AlertCircle, Download, RotateCcw, Loader2 } from "lucide-react";
-import type { BoundingBox, CorrectedBox } from "./components/PlanEditor";
+import type { BoundingBox, CorrectedBox } from "./components/types";
 
 // Konva requires DOM APIs — load client-side only
 const PlanEditor = dynamic(() => import("./components/PlanEditor"), {
