@@ -9,7 +9,7 @@ type Status = "idle" | "uploading" | "selecting" | "processing" | "done" | "erro
 interface PageThumb { page: number; url: string; }
 interface Detection { class: string; count: number; }
 interface Results {
-  image_url: string;
+  image_b64: string;
   detections: Detection[];
   total: number;
   page_used: number;
@@ -232,7 +232,7 @@ export default function Home() {
             <div>
               <h2 className="text-sm font-semibold text-gray-700 mb-3 uppercase tracking-wide">Detected Doors</h2>
               <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                <img src={`${API_URL}${results.image_url}`} alt="Annotated plan" className="w-full" />
+                <img src={results.image_b64} alt="Annotated plan" className="w-full" />
               </div>
             </div>
 
