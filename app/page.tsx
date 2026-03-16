@@ -1,18 +1,32 @@
 "use client";
 import { useState, useCallback, useRef } from "react";
+import dynamic from "next/dynamic";
 import { Upload, FileText, CheckCircle, AlertCircle, Download, RotateCcw, Loader2 } from "lucide-react";
+import type { BoundingBox, CorrectedBox } from "./components/PlanEditor";
+
+// Konva requires DOM APIs — load client-side only
+const PlanEditor = dynamic(() => import("./components/PlanEditor"), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full rounded-xl border border-gray-200 bg-gray-100 animate-pulse" style={{ minHeight: 360 }} />
+  ),
+});
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-type Status = "idle" | "uploading" | "selecting" | "processing" | "done" | "error";
+type Status = "idle" | "uploading" | "selecting" | "processing" | "done" | "reviewing" | "error";
 
 interface PageThumb { page: number; url: string; }
 interface Detection { class: string; count: number; }
 interface Results {
+  session_id: string;
   image_b64: string;
   detections: Detection[];
   total: number;
   page_used: number;
+  boxes: BoundingBox[];
+  image_width: number;
+  image_height: number;
 }
 
 const CLASS_LABELS: Record<string, string> = {
@@ -38,7 +52,15 @@ export default function Home() {
   const [results, setResults] = useState<Results | null>(null);
   const [error, setError] = useState<string>("");
   const [dragOver, setDragOver] = useState(false);
+  const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const fireToast = (msg: string) => {
+    setToastMessage(msg);
+    setShowToast(true);
+    setTimeout(() => setShowToast(false), 4000);
+  };
 
   const handleFile = useCallback(async (f: File) => {
     if (!f.name.toLowerCase().endsWith(".pdf")) {
@@ -84,10 +106,34 @@ export default function Home() {
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setResults(data);
-      setStatus("done");
+      setStatus("reviewing");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Analysis failed.");
       setStatus("error");
+    }
+  };
+
+  const handleFeedback = async (correctedBoxes: CorrectedBox[]) => {
+    if (!results) return;
+
+    // Strip the data URI prefix before sending
+    const imageB64 = results.image_b64.replace(/^data:[^;]+;base64,/, "");
+
+    try {
+      const res = await fetch(`${API_URL}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: results.session_id,
+          image_b64: imageB64,
+          boxes: correctedBoxes,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      fireToast("Corrections saved — thank you!");
+    } catch (e: unknown) {
+      fireToast("Failed to save corrections. Please try again.");
+      console.error("Feedback error:", e);
     }
   };
 
@@ -97,6 +143,7 @@ export default function Home() {
     setPages([]);
     setResults(null);
     setError("");
+    setShowToast(false);
   };
 
   const downloadCSV = () => {
@@ -225,56 +272,81 @@ export default function Home() {
           </div>
         )}
 
-        {/* RESULTS */}
-        {status === "done" && results && (
-          <div className="result-card grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* Annotated plan image */}
-            <div>
-              <h2 className="text-sm font-semibold text-gray-700 mb-3 uppercase tracking-wide">Detected Doors</h2>
-              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                <img src={results.image_b64} alt="Annotated plan" className="w-full" />
+        {/* REVIEWING — interactive correction editor */}
+        {status === "reviewing" && results && (
+          <div className="space-y-6">
+            {/* Summary row */}
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Review detections</h2>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  {results.total} door{results.total !== 1 ? "s" : ""} detected on page {results.page_used}.
+                  Correct any mistakes below, then submit.
+                </p>
               </div>
+              <button
+                onClick={downloadCSV}
+                className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Export CSV
+              </button>
             </div>
 
-            {/* Door count table */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Door Schedule</h2>
-                <button onClick={downloadCSV} className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 transition-colors">
-                  <Download className="w-3.5 h-3.5" />
-                  Export CSV
-                </button>
-              </div>
-              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-100">
-                      <th className="text-left px-4 py-3 text-xs text-gray-500 font-medium">Door Type</th>
-                      <th className="text-right px-4 py-3 text-xs text-gray-500 font-medium">Qty</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {results.detections.map((d, i) => (
-                      <tr key={i} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
-                        <td className="px-4 py-3 text-gray-800">{CLASS_LABELS[d.class] || d.class}</td>
-                        <td className="px-4 py-3 text-right font-medium text-gray-900">{d.count}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr className="bg-gray-50">
-                      <td className="px-4 py-3 text-sm font-semibold text-gray-900">Total</td>
-                      <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{results.total}</td>
-                    </tr>
-                  </tfoot>
-                </table>
+            {/* Two-column layout: editor + table */}
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+              {/* Plan editor (takes 2/3 width on xl) */}
+              <div className="xl:col-span-2">
+                <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">
+                  Detected Doors — click a box to edit
+                </h3>
+                <PlanEditor
+                  imageSrc={results.image_b64}
+                  boxes={results.boxes}
+                  imageWidth={results.image_width}
+                  imageHeight={results.image_height}
+                  onSubmit={handleFeedback}
+                />
               </div>
 
-              <div className="mt-4 p-4 bg-green-50 border border-green-100 rounded-xl flex items-start gap-3">
-                <CheckCircle className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-sm font-medium text-green-800">{results.total} doors detected</p>
-                  <p className="text-xs text-green-600 mt-0.5">Review the plan image to verify detections before quoting.</p>
+              {/* Door schedule table (1/3 width on xl) */}
+              <div>
+                <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">
+                  Door Schedule
+                </h3>
+                <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-100">
+                        <th className="text-left px-4 py-3 text-xs text-gray-500 font-medium">Door Type</th>
+                        <th className="text-right px-4 py-3 text-xs text-gray-500 font-medium">Qty</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {results.detections.map((d, i) => (
+                        <tr key={i} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                          <td className="px-4 py-3 text-gray-800">{CLASS_LABELS[d.class] || d.class}</td>
+                          <td className="px-4 py-3 text-right font-medium text-gray-900">{d.count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr className="bg-gray-50">
+                        <td className="px-4 py-3 text-sm font-semibold text-gray-900">Total</td>
+                        <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{results.total}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+
+                <div className="mt-4 p-4 bg-blue-50 border border-blue-100 rounded-xl">
+                  <p className="text-xs text-blue-700 font-medium mb-1">How to correct detections</p>
+                  <ul className="text-xs text-blue-600 space-y-1 list-disc list-inside">
+                    <li>Click a box to select it, then change type or delete</li>
+                    <li>Drag a box to reposition it</li>
+                    <li>Use corner handles to resize</li>
+                    <li>Use &ldquo;+ Add door&rdquo; to draw a new box</li>
+                  </ul>
                 </div>
               </div>
             </div>
@@ -297,6 +369,14 @@ export default function Home() {
       <footer className="border-t border-gray-200 px-6 py-4 text-center">
         <p className="text-xs text-gray-400">Independent Doors — Internal use only</p>
       </footer>
+
+      {/* Toast notification */}
+      {showToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-gray-900 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-lg animate-fade-in">
+          <CheckCircle className="w-4 h-4 text-green-400 shrink-0" />
+          {toastMessage}
+        </div>
+      )}
     </div>
   );
 }
