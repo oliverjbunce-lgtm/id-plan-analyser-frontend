@@ -1,7 +1,7 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState } from "react";
-import { Stage, Layer, Image as KonvaImage, Rect, Text, Transformer } from "react-konva";
+import { useEffect, useRef, useState } from "react";
+import { Stage, Layer, Image as KonvaImage, Rect, Text, Transformer, Group } from "react-konva";
 import type Konva from "konva";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -378,7 +378,7 @@ export default function PlanEditor({
                 const isSelected = selectedId === box.id;
 
                 return (
-                  <Fragment key={box.id}>
+                  <Group key={box.id}>
                     <Rect
                       id={box.id}
                       x={x}
@@ -406,7 +406,7 @@ export default function PlanEditor({
                       fill={color}
                       listening={false}
                     />
-                  </Fragment>
+                  </Group>
                 );
               })}
 
