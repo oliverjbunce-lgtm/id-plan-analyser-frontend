@@ -189,7 +189,7 @@ export default function Home() {
                       : "border-gray-200 hover:border-gray-400"
                   }`}
                 >
-                  <img src={`${API_URL}${p.url}`} alt={`Page ${p.page}`} className="w-full object-cover" />
+                  <img src={p.url} alt={`Page ${p.page}`} className="w-full object-cover" />
                   <div className={`absolute inset-0 flex items-end justify-start p-1.5 ${selectedPage === p.page ? "bg-blue-600/10" : ""}`}>
                     <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
                       selectedPage === p.page ? "bg-blue-600 text-white" : "bg-white/80 text-gray-700"
