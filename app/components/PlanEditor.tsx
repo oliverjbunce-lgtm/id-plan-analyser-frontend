@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Stage, Layer, Image as KonvaImage, Rect, Text, Transformer, Group } from "react-konva";
 import type Konva from "konva";
 import type { BoundingBox, CorrectedBox } from "./types";
+import { ZoomIn, ZoomOut, Maximize2, Minimize2 } from "lucide-react";
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// ── Constants ──────────────────────────────────────────────────────────────────
 
 export const CLASS_COLORS: Record<string, string> = {
   L_prehung_door: "#3B82F6",
@@ -38,9 +39,29 @@ const CLASS_IDS: Record<string, number> = {
   Wardrobe_sliding_three_doors: 11,
 };
 
+// Compact labels for canvas (long names obscure the plan)
+const SHORT_LABELS: Record<string, string> = {
+  L_prehung_door: "L Prehung",
+  R_prehung_door: "R Prehung",
+  Double_prehung_door: "Dbl Prehung",
+  S_cavity_slider: "S Cavity",
+  D_cavity_slider: "D Cavity",
+  Wardrobe_sliding_two_doors_1: "WD 2-Door A",
+  Wardrobe_sliding_two_doors_2: "WD 2-Door B",
+  Wardrobe_sliding_three_doors: "WD 3-Door",
+  Wardrobe_sliding_four_doors: "WD 4-Door",
+  Bi_folding_door: "Bi-Fold",
+  D_bi_folding_door: "Dbl Bi-Fold",
+  Barn_wall_slider: "Barn Slider",
+};
+
 const CLASS_LIST = Object.keys(CLASS_COLORS);
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+const MIN_SCALE = 0.2;
+const MAX_SCALE = 12;
+const ZOOM_FACTOR = 1.18;
+
+// ── Types ──────────────────────────────────────────────────────────────────────
 
 export type { BoundingBox, CorrectedBox } from "./types";
 
@@ -62,13 +83,13 @@ interface PlanEditorProps {
   onSubmit: (correctedBoxes: CorrectedBox[]) => void;
 }
 
-// ── ID generator ──────────────────────────────────────────────────────────────
+// ── ID generator ───────────────────────────────────────────────────────────────
 let _idCounter = 0;
 function genId() {
   return `eb${++_idCounter}`;
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+// ── Component ──────────────────────────────────────────────────────────────────
 
 export default function PlanEditor({
   imageSrc,
@@ -81,10 +102,15 @@ export default function PlanEditor({
   const stageRef = useRef<Konva.Stage>(null);
   const trRef = useRef<Konva.Transformer>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
+  const panStartRef = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null);
 
+  // Container size (tracked by ResizeObserver)
   const [containerWidth, setContainerWidth] = useState(800);
-  const scale = containerWidth / imageWidth;
-  const canvasHeight = Math.round(imageHeight * scale);
+  const [containerHeight, setContainerHeight] = useState(600);
+
+  // Image-aspect canvas height (used when not fullscreen)
+  const imgScale = containerWidth / imageWidth;
+  const canvasHeight = Math.round(imageHeight * imgScale);
 
   const [bgImage, setBgImage] = useState<HTMLImageElement | null>(null);
 
@@ -102,37 +128,42 @@ export default function PlanEditor({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [addMode, setAddMode] = useState(false);
   const [addClass, setAddClass] = useState("L_prehung_door");
-  const [drawRect, setDrawRect] = useState<{
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-  } | null>(null);
+  const [drawRect, setDrawRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [emptyWarning, setEmptyWarning] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
 
-  // ── Responsive sizing ───────────────────────────────────────────────────────
+  // Zoom / pan
+  const [stageScale, setStageScale] = useState(1);
+  const [stageOffset, setStageOffset] = useState({ x: 0, y: 0 });
+
+  // Fullscreen
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // ── Responsive sizing ──────────────────────────────────────────────────────────
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const initialW = el.clientWidth;
-    if (initialW > 0) setContainerWidth(initialW);
+    const { clientWidth, clientHeight } = el;
+    if (clientWidth > 0) setContainerWidth(clientWidth);
+    if (clientHeight > 0) setContainerHeight(clientHeight);
 
     const ro = new ResizeObserver(([entry]) => {
-      const w = entry.contentRect.width;
-      if (w > 0) setContainerWidth(w);
+      const { width, height } = entry.contentRect;
+      if (width > 0) setContainerWidth(width);
+      if (height > 0) setContainerHeight(height);
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [isFullscreen]);
 
-  // ── Load background image ───────────────────────────────────────────────────
+  // ── Load background image ──────────────────────────────────────────────────────
   useEffect(() => {
     const img = new window.Image();
     img.onload = () => setBgImage(img);
     img.src = imageSrc;
   }, [imageSrc]);
 
-  // ── Attach transformer to selected node ─────────────────────────────────────
+  // ── Attach transformer to selected node ───────────────────────────────────────
   useEffect(() => {
     if (!trRef.current || !stageRef.current) return;
     if (selectedId) {
@@ -144,94 +175,163 @@ export default function PlanEditor({
     trRef.current.getLayer()?.batchDraw();
   }, [selectedId, editBoxes]);
 
-  // ── Selected box helpers ────────────────────────────────────────────────────
-  const selectedBox = editBoxes.find((b) => b.id === selectedId);
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────────
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (document.activeElement as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
+        setEditBoxes((prev) => prev.filter((b) => b.id !== selectedId));
+        setSelectedId(null);
+      }
+      if (e.key === "Escape") {
+        setSelectedId(null);
+        setAddMode(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedId]);
 
-  // Panel position: just above the box, clamped to not go off top
-  const panelLeft = selectedBox
-    ? Math.min(selectedBox.nx * containerWidth, containerWidth - 240)
-    : 0;
-  const panelTop = selectedBox
-    ? Math.max(0, selectedBox.ny * canvasHeight - 72)
-    : 0;
+  // ── Zoom helpers ───────────────────────────────────────────────────────────────
+  const zoomToPoint = useCallback(
+    (point: { x: number; y: number }, newScale: number) => {
+      const clamped = Math.min(MAX_SCALE, Math.max(MIN_SCALE, newScale));
+      const mousePointTo = {
+        x: (point.x - stageOffset.x) / stageScale,
+        y: (point.y - stageOffset.y) / stageScale,
+      };
+      setStageScale(clamped);
+      setStageOffset({
+        x: point.x - mousePointTo.x * clamped,
+        y: point.y - mousePointTo.y * clamped,
+      });
+    },
+    [stageOffset, stageScale]
+  );
 
-  // ── Stage event handlers ────────────────────────────────────────────────────
-  const onStageMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    const clickedOnStage = e.target === e.target.getStage();
-    if (!addMode) {
-      if (clickedOnStage) setSelectedId(null);
-      return;
-    }
+  const fitToView = useCallback(() => {
+    setStageScale(1);
+    setStageOffset({ x: 0, y: 0 });
+  }, []);
+
+  // Convert stage-container coords → layer coords
+  const toLayer = useCallback(
+    (pos: { x: number; y: number }) => ({
+      x: (pos.x - stageOffset.x) / stageScale,
+      y: (pos.y - stageOffset.y) / stageScale,
+    }),
+    [stageOffset, stageScale]
+  );
+
+  // ── Scroll to zoom ────────────────────────────────────────────────────────────
+  const onStageWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
+    e.evt.preventDefault();
     const stage = stageRef.current;
     if (!stage) return;
-    const pos = stage.getPointerPosition();
-    if (!pos) return;
-    drawStartRef.current = { x: pos.x, y: pos.y };
-    setDrawRect({ x: pos.x, y: pos.y, w: 0, h: 0 });
+    const pointer = stage.getPointerPosition();
+    if (!pointer) return;
+    const direction = e.evt.deltaY < 0 ? 1 : -1;
+    zoomToPoint(pointer, direction > 0 ? stageScale * ZOOM_FACTOR : stageScale / ZOOM_FACTOR);
+  };
+
+  // ── Stage mouse handlers ───────────────────────────────────────────────────────
+  const onStageMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    // bgImage has listening={false}, so clicks on it bubble to the stage
+    const isBackground = e.target === e.target.getStage();
+
+    if (addMode) {
+      if (!isBackground) return;
+      const stage = stageRef.current;
+      if (!stage) return;
+      const pos = stage.getPointerPosition();
+      if (!pos) return;
+      const lp = toLayer(pos);
+      drawStartRef.current = lp;
+      setDrawRect({ x: lp.x, y: lp.y, w: 0, h: 0 });
+      return;
+    }
+
+    if (isBackground) {
+      setSelectedId(null);
+      const stage = stageRef.current;
+      if (!stage) return;
+      const pos = stage.getPointerPosition();
+      if (!pos) return;
+      panStartRef.current = { px: pos.x, py: pos.y, ox: stageOffset.x, oy: stageOffset.y };
+      setIsPanning(true);
+    }
   };
 
   const onStageMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (!addMode || !drawStartRef.current) return;
     const stage = stageRef.current;
     if (!stage) return;
     const pos = stage.getPointerPosition();
     if (!pos) return;
-    const start = drawStartRef.current;
-    setDrawRect({
-      x: Math.min(start.x, pos.x),
-      y: Math.min(start.y, pos.y),
-      w: Math.abs(pos.x - start.x),
-      h: Math.abs(pos.y - start.y),
-    });
+
+    if (addMode && drawStartRef.current) {
+      const lp = toLayer(pos);
+      const start = drawStartRef.current;
+      setDrawRect({
+        x: Math.min(start.x, lp.x),
+        y: Math.min(start.y, lp.y),
+        w: Math.abs(lp.x - start.x),
+        h: Math.abs(lp.y - start.y),
+      });
+      return;
+    }
+
+    if (isPanning && panStartRef.current) {
+      const { px, py, ox, oy } = panStartRef.current;
+      setStageOffset({ x: ox + (pos.x - px), y: oy + (pos.y - py) });
+    }
   };
 
   const onStageMouseUp = () => {
-    if (!addMode || !drawRect) return;
-    if (drawRect.w < 8 || drawRect.h < 8) {
+    if (addMode && drawRect) {
+      const minSize = 8 / stageScale;
+      if (drawRect.w > minSize && drawRect.h > minSize) {
+        const id = genId();
+        setEditBoxes((prev) => [
+          ...prev,
+          {
+            id,
+            cls: addClass,
+            nx: drawRect.x / containerWidth,
+            ny: drawRect.y / canvasHeight,
+            nw: drawRect.w / containerWidth,
+            nh: drawRect.h / canvasHeight,
+          },
+        ]);
+        setSelectedId(id);
+        setAddMode(false);
+      }
       setDrawRect(null);
       drawStartRef.current = null;
-      return;
     }
-    const id = genId();
-    const newBox: EditableBox = {
-      id,
-      cls: addClass,
-      nx: drawRect.x / containerWidth,
-      ny: drawRect.y / canvasHeight,
-      nw: drawRect.w / containerWidth,
-      nh: drawRect.h / canvasHeight,
-    };
-    setEditBoxes((prev) => [...prev, newBox]);
-    setDrawRect(null);
-    drawStartRef.current = null;
-    setAddMode(false);
-    setSelectedId(id);
+
+    if (isPanning) {
+      setIsPanning(false);
+      panStartRef.current = null;
+    }
   };
 
-  // ── Box mutation handlers ───────────────────────────────────────────────────
+  // ── Box mutation handlers ──────────────────────────────────────────────────────
   const handleDragEnd = (id: string, e: Konva.KonvaEventObject<DragEvent>) => {
     const node = e.target;
     setEditBoxes((prev) =>
       prev.map((b) =>
         b.id === id
-          ? {
-              ...b,
-              nx: node.x() / containerWidth,
-              ny: node.y() / canvasHeight,
-            }
+          ? { ...b, nx: node.x() / containerWidth, ny: node.y() / canvasHeight }
           : b
       )
     );
   };
 
-  const handleTransformEnd = (
-    id: string,
-    e: Konva.KonvaEventObject<Event>
-  ) => {
+  const handleTransformEnd = (id: string, e: Konva.KonvaEventObject<Event>) => {
     const node = e.target as Konva.Rect;
-    const scaleX = node.scaleX();
-    const scaleY = node.scaleY();
-    // Reset scale back to 1 — bake it into width/height
+    const sx = node.scaleX();
+    const sy = node.scaleY();
     node.scaleX(1);
     node.scaleY(1);
     setEditBoxes((prev) =>
@@ -241,8 +341,8 @@ export default function PlanEditor({
               ...b,
               nx: node.x() / containerWidth,
               ny: node.y() / canvasHeight,
-              nw: (node.width() * scaleX) / containerWidth,
-              nh: (node.height() * scaleY) / canvasHeight,
+              nw: (node.width() * sx) / containerWidth,
+              nh: (node.height() * sy) / canvasHeight,
             }
           : b
       )
@@ -257,38 +357,52 @@ export default function PlanEditor({
 
   const changeSelectedClass = (cls: string) => {
     if (!selectedId) return;
-    setEditBoxes((prev) =>
-      prev.map((b) => (b.id === selectedId ? { ...b, cls } : b))
-    );
+    setEditBoxes((prev) => prev.map((b) => (b.id === selectedId ? { ...b, cls } : b)));
   };
 
-  // ── Submit ──────────────────────────────────────────────────────────────────
+  // ── Submit ─────────────────────────────────────────────────────────────────────
   const handleSubmit = () => {
     if (editBoxes.length === 0) {
       setEmptyWarning(true);
       setTimeout(() => setEmptyWarning(false), 3000);
       return;
     }
-    const corrected: CorrectedBox[] = editBoxes.map((b) => ({
-      class_id: CLASS_IDS[b.cls] ?? 0,
-      x_center: b.nx + b.nw / 2,
-      y_center: b.ny + b.nh / 2,
-      width: b.nw,
-      height: b.nh,
-    }));
-    onSubmit(corrected);
+    onSubmit(
+      editBoxes.map((b) => ({
+        class_id: CLASS_IDS[b.cls] ?? 0,
+        x_center: b.nx + b.nw / 2,
+        y_center: b.ny + b.nh / 2,
+        width: b.nw,
+        height: b.nh,
+      }))
+    );
   };
 
-  // ── Render ──────────────────────────────────────────────────────────────────
+  // ── Floating panel position ────────────────────────────────────────────────────
+  const selectedBox = editBoxes.find((b) => b.id === selectedId);
+  const stageH = isFullscreen ? containerHeight : canvasHeight;
+
+  const panelLeft = selectedBox
+    ? Math.max(0, Math.min(selectedBox.nx * containerWidth * stageScale + stageOffset.x, containerWidth - 240))
+    : 0;
+  const panelTop = selectedBox
+    ? Math.max(4, Math.min(
+        selectedBox.ny * canvasHeight * stageScale + stageOffset.y - 52,
+        stageH - 52
+      ))
+    : 0;
+
+  // ── Cursor ─────────────────────────────────────────────────────────────────────
+  const cursor = addMode ? "crosshair" : isPanning ? "grabbing" : "grab";
+
+  // ── Render ─────────────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-3">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2">
+    <div className={isFullscreen ? "fixed inset-0 z-50 bg-white flex flex-col" : "space-y-3"}>
+
+      {/* ── Toolbar ── */}
+      <div className={`flex flex-wrap items-center gap-2 ${isFullscreen ? "px-4 pt-3 pb-2 border-b border-gray-200 shrink-0" : ""}`}>
         <button
-          onClick={() => {
-            setAddMode((m) => !m);
-            setSelectedId(null);
-          }}
+          onClick={() => { setAddMode((m) => !m); setSelectedId(null); }}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border ${
             addMode
               ? "bg-blue-600 text-white border-blue-600"
@@ -306,38 +420,68 @@ export default function PlanEditor({
               className="text-sm border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               {CLASS_LIST.map((c) => (
-                <option key={c} value={c}>
-                  {c.replace(/_/g, " ")}
-                </option>
+                <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
               ))}
             </select>
-            <span className="text-xs text-blue-600">
-              Click and drag on the plan to draw a box
-            </span>
+            <span className="text-xs text-blue-600">Click and drag on the plan to draw a box</span>
           </>
         )}
 
-        {selectedBox && (
-          <span className="ml-auto text-xs text-gray-400">
-            Click outside box to deselect
-          </span>
-        )}
+        {/* Zoom / fullscreen controls */}
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            onClick={() => zoomToPoint({ x: containerWidth / 2, y: stageH / 2 }, stageScale * ZOOM_FACTOR)}
+            title="Zoom in (scroll up)"
+            className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors"
+          >
+            <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => zoomToPoint({ x: containerWidth / 2, y: stageH / 2 }, stageScale / ZOOM_FACTOR)}
+            title="Zoom out (scroll down)"
+            className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors"
+          >
+            <ZoomOut className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={fitToView}
+            title="Reset zoom"
+            className="px-2 py-1 rounded-lg border border-gray-200 text-xs text-gray-500 hover:bg-gray-50 transition-colors tabular-nums"
+          >
+            {Math.round(stageScale * 100)}%
+          </button>
+          <button
+            onClick={() => setIsFullscreen((f) => !f)}
+            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors"
+          >
+            {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+          </button>
+        </div>
       </div>
 
-      {/* Canvas */}
+      {/* ── Canvas ── */}
       <div
         ref={containerRef}
-        className="relative w-full rounded-xl overflow-hidden border border-gray-200 bg-gray-100 select-none"
+        className={`relative w-full select-none overflow-hidden bg-gray-100 ${
+          isFullscreen ? "flex-1" : "rounded-xl border border-gray-200"
+        }`}
+        style={!isFullscreen ? { height: canvasHeight } : undefined}
       >
         {containerWidth > 0 && (
           <Stage
             ref={stageRef}
             width={containerWidth}
-            height={canvasHeight}
+            height={stageH}
+            x={stageOffset.x}
+            y={stageOffset.y}
+            scaleX={stageScale}
+            scaleY={stageScale}
+            onWheel={onStageWheel}
             onMouseDown={onStageMouseDown}
             onMouseMove={onStageMouseMove}
             onMouseUp={onStageMouseUp}
-            style={{ cursor: addMode ? "crosshair" : "default", display: "block" }}
+            style={{ cursor, display: "block" }}
           >
             <Layer>
               {/* Background image */}
@@ -360,6 +504,13 @@ export default function PlanEditor({
                 const h = box.nh * canvasHeight;
                 const color = CLASS_COLORS[box.cls] ?? "#6B7280";
                 const isSelected = selectedId === box.id;
+                const label = SHORT_LABELS[box.cls] ?? box.cls;
+                // Scale-invariant stroke width (always ~1.5px visual)
+                const sw = (isSelected ? 2 : 1.5) / stageScale;
+                // Scale-invariant label font/pill (always ~10px visual)
+                const fs = 10 / stageScale;
+                const pillH = 16 / stageScale;
+                const pillPad = 4 / stageScale;
 
                 return (
                   <Group key={box.id}>
@@ -369,32 +520,39 @@ export default function PlanEditor({
                       y={y}
                       width={w}
                       height={h}
-                      fill={color + "30"}
+                      fill={isSelected ? color + "38" : color + "18"}
                       stroke={color}
-                      strokeWidth={isSelected ? 2.5 : 1.5}
+                      strokeWidth={sw}
                       draggable={!addMode}
-                      onClick={() => {
-                        if (!addMode) setSelectedId(box.id);
-                      }}
-                      onTap={() => {
-                        if (!addMode) setSelectedId(box.id);
-                      }}
+                      onClick={() => { if (!addMode) setSelectedId(box.id); }}
+                      onTap={() => { if (!addMode) setSelectedId(box.id); }}
                       onDragEnd={(e) => handleDragEnd(box.id, e)}
                       onTransformEnd={(e) => handleTransformEnd(box.id, e)}
                     />
-                    <Text
-                      x={x + 4}
-                      y={y + 4}
-                      text={box.cls.replace(/_/g, " ")}
-                      fontSize={Math.max(9, Math.min(12, w / 10))}
+                    {/* Label pill — scale-invariant */}
+                    <Rect
+                      x={x + pillPad}
+                      y={y + pillPad}
+                      width={label.length * fs * 0.58 + pillPad * 2}
+                      height={pillH}
                       fill={color}
+                      cornerRadius={3 / stageScale}
+                      listening={false}
+                    />
+                    <Text
+                      x={x + pillPad * 2}
+                      y={y + pillPad + (pillH - fs) / 2}
+                      text={label}
+                      fontSize={fs}
+                      fill="white"
+                      fontStyle="bold"
                       listening={false}
                     />
                   </Group>
                 );
               })}
 
-              {/* Drawing preview */}
+              {/* Draw preview */}
               {drawRect && drawRect.w > 0 && drawRect.h > 0 && (
                 <Rect
                   x={drawRect.x}
@@ -403,17 +561,20 @@ export default function PlanEditor({
                   height={drawRect.h}
                   fill={(CLASS_COLORS[addClass] ?? "#6B7280") + "20"}
                   stroke={CLASS_COLORS[addClass] ?? "#6B7280"}
-                  strokeWidth={1.5}
-                  dash={[5, 4]}
+                  strokeWidth={1.5 / stageScale}
+                  dash={[5 / stageScale, 4 / stageScale]}
                   listening={false}
                 />
               )}
 
-              {/* Transformer */}
+              {/* Transformer — scale-invariant handles */}
               <Transformer
                 ref={trRef}
                 rotateEnabled={false}
                 keepRatio={false}
+                anchorSize={8 / stageScale}
+                anchorStrokeWidth={1.5 / stageScale}
+                borderStrokeWidth={1.5 / stageScale}
                 boundBoxFunc={(oldBox, newBox) => {
                   if (newBox.width < 10 || newBox.height < 10) return oldBox;
                   return newBox;
@@ -423,7 +584,7 @@ export default function PlanEditor({
           </Stage>
         )}
 
-        {/* Floating panel for selected box */}
+        {/* Floating edit panel for selected box */}
         {selectedBox && (
           <div
             className="absolute z-10 bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex items-center gap-2 pointer-events-auto"
@@ -435,9 +596,7 @@ export default function PlanEditor({
               className="flex-1 text-xs border border-gray-300 rounded px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
               {CLASS_LIST.map((c) => (
-                <option key={c} value={c}>
-                  {c.replace(/_/g, " ")}
-                </option>
+                <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
               ))}
             </select>
             <button
@@ -450,11 +609,11 @@ export default function PlanEditor({
         )}
       </div>
 
-      {/* Footer / submit row */}
-      <div className="flex items-center justify-between gap-4">
+      {/* ── Footer ── */}
+      <div className={`flex items-center justify-between gap-4 ${isFullscreen ? "px-4 pb-3 shrink-0" : ""}`}>
         <p className="text-xs text-gray-400">
-          {editBoxes.length} box{editBoxes.length !== 1 ? "es" : ""} · drag to
-          move · handles to resize · click to change type
+          {editBoxes.length} box{editBoxes.length !== 1 ? "es" : ""} ·{" "}
+          scroll to zoom · drag background to pan · click box to edit · <kbd className="font-mono">Del</kbd> to remove
         </p>
         <div className="flex items-center gap-3">
           {emptyWarning && (

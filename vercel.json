@@ -3,6 +3,6 @@
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
   "env": {
-    "NEXT_PUBLIC_API_URL": "https://YOUR-HF-SPACE.hf.space"
+    "NEXT_PUBLIC_API_URL": "https://oliverbunce-id-plan-analyser-api.hf.space"
   }
 }
