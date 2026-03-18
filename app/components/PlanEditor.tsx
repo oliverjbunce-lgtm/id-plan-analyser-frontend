@@ -82,6 +82,7 @@ interface PlanEditorProps {
   imageHeight: number;
   onSubmit: (correctedBoxes: CorrectedBox[]) => void;
   onBoxesChange?: (classes: string[]) => void;
+  submitLabel?: string;
 }
 
 // ── ID generator ───────────────────────────────────────────────────────────────
@@ -99,6 +100,7 @@ export default function PlanEditor({
   imageHeight,
   onSubmit,
   onBoxesChange,
+  submitLabel = "Confirm & Submit Corrections",
 }: PlanEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -632,7 +634,7 @@ export default function PlanEditor({
             onClick={handleSubmit}
             className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
           >
-            Confirm & Submit Corrections
+            {submitLabel}
           </button>
         </div>
       </div>

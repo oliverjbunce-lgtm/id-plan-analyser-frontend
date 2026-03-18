@@ -1,10 +1,9 @@
 "use client";
 import { useState, useCallback, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
-import { Upload, FileText, CheckCircle, AlertCircle, Download, RotateCcw, Loader2 } from "lucide-react";
+import { Upload, FileText, CheckCircle, AlertCircle, Download, RotateCcw, Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 import type { BoundingBox, CorrectedBox } from "./components/types";
 
-// Konva requires DOM APIs — load client-side only
 const PlanEditor = dynamic(() => import("./components/PlanEditor"), {
   ssr: false,
   loading: () => (
@@ -18,15 +17,15 @@ type Status = "idle" | "uploading" | "selecting" | "processing" | "reviewing" | 
 
 interface PageThumb { page: number; url: string; }
 interface Detection { class: string; count: number; }
-interface Results {
+interface PageResult {
+  pageNum: number;
   session_id: string;
   image_b64: string;
-  detections: Detection[];
-  total: number;
-  page_used: number;
   boxes: BoundingBox[];
   image_width: number;
   image_height: number;
+  detections: Detection[];
+  total: number;
 }
 
 const CLASS_LABELS: Record<string, string> = {
@@ -47,34 +46,21 @@ const CLASS_LABELS: Record<string, string> = {
 export default function Home() {
   const [status, setStatus] = useState<Status>("idle");
   const [file, setFile] = useState<File | null>(null);
+  const [uploadSessionId, setUploadSessionId] = useState<string>("");
   const [pages, setPages] = useState<PageThumb[]>([]);
-  const [selectedPage, setSelectedPage] = useState<number>(1);
-  const [results, setResults] = useState<Results | null>(null);
+  const [selectedPages, setSelectedPages] = useState<number[]>([]);
+  const [pageResults, setPageResults] = useState<PageResult[]>([]);
+  const [analysisProgress, setAnalysisProgress] = useState({ done: 0, total: 0 });
+  const [reviewingIdx, setReviewingIdx] = useState(0);
+  const [allLiveClasses, setAllLiveClasses] = useState<Record<number, string[]>>({});
+  const [submittedPages, setSubmittedPages] = useState<Set<number>>(new Set());
+  const [finalDetections, setFinalDetections] = useState<Detection[]>([]);
+  const [finalTotal, setFinalTotal] = useState(0);
   const [error, setError] = useState<string>("");
   const [dragOver, setDragOver] = useState(false);
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-
-  // Live box tracking — updated by PlanEditor on every edit
-  const [liveClasses, setLiveClasses] = useState<string[]>([]);
-  // Final snapshot saved at submission time
-  const [finalDetections, setFinalDetections] = useState<Detection[]>([]);
-  const [finalTotal, setFinalTotal] = useState(0);
-
-  // Compute live detection schedule from current editor state
-  const liveDetections = useMemo<Detection[]>(() => {
-    const counts: Record<string, number> = {};
-    for (const cls of liveClasses) counts[cls] = (counts[cls] || 0) + 1;
-    return Object.entries(counts)
-      .map(([class_, count]) => ({ class: class_, count }))
-      .sort((a, b) => b.count - a.count);
-  }, [liveClasses]);
-  const liveTotal = liveClasses.length;
-
-  // Unified source for whichever state we're in
-  const displayDetections = status === "done" ? finalDetections : liveDetections;
-  const displayTotal = status === "done" ? finalTotal : liveTotal;
 
   const fireToast = (msg: string) => {
     setToastMessage(msg);
@@ -82,6 +68,24 @@ export default function Home() {
     setTimeout(() => setShowToast(false), 4000);
   };
 
+  // ── Combined live schedule across all pages ──────────────────────────────────
+  const combinedLiveClasses = useMemo(
+    () => Object.values(allLiveClasses).flat(),
+    [allLiveClasses]
+  );
+  const liveDetections = useMemo<Detection[]>(() => {
+    const counts: Record<string, number> = {};
+    for (const cls of combinedLiveClasses) counts[cls] = (counts[cls] || 0) + 1;
+    return Object.entries(counts)
+      .map(([class_, count]) => ({ class: class_, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [combinedLiveClasses]);
+  const liveTotal = combinedLiveClasses.length;
+
+  const displayDetections = status === "done" ? finalDetections : liveDetections;
+  const displayTotal = status === "done" ? finalTotal : liveTotal;
+
+  // ── File handling ─────────────────────────────────────────────────────────────
   const handleFile = useCallback(async (f: File) => {
     if (!f.name.toLowerCase().endsWith(".pdf")) {
       setError("Please upload a PDF file.");
@@ -91,16 +95,15 @@ export default function Home() {
     setFile(f);
     setError("");
     setStatus("uploading");
-
     const form = new FormData();
     form.append("file", f);
-
     try {
       const res = await fetch(`${API_URL}/upload`, { method: "POST", body: form });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setPages(data.pages);
-      setSelectedPage(data.suggested_page);
+      setSelectedPages([data.suggested_page]);
+      setUploadSessionId(data.session_id);
       setStatus("selecting");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Upload failed.");
@@ -115,63 +118,83 @@ export default function Home() {
     if (f) handleFile(f);
   };
 
-  const handleAnalyse = async () => {
-    if (!file) return;
-    setStatus("processing");
-    const form = new FormData();
-    form.append("file", file);
-    form.append("page", String(selectedPage));
-    try {
-      const res = await fetch(`${API_URL}/analyse`, { method: "POST", body: form });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      setResults(data);
-      setStatus("reviewing");
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Analysis failed.");
-      setStatus("error");
-    }
+  const togglePage = (pageNum: number) => {
+    setSelectedPages(prev =>
+      prev.includes(pageNum)
+        ? prev.filter(p => p !== pageNum)
+        : [...prev, pageNum].sort((a, b) => a - b)
+    );
   };
 
-  const handleFeedback = async (correctedBoxes: CorrectedBox[]) => {
-    if (!results) return;
+  // ── Multi-page analysis ───────────────────────────────────────────────────────
+  const handleAnalyse = async () => {
+    if (selectedPages.length === 0) return;
+    setStatus("processing");
+    setAnalysisProgress({ done: 0, total: selectedPages.length });
 
-    // Snapshot the live schedule at submission time before transitioning
-    const submittedDetections = liveDetections;
-    const submittedTotal = liveTotal;
+    const results: PageResult[] = [];
+    const initClasses: Record<number, string[]> = {};
 
-    const imageB64 = results.image_b64.replace(/^data:[^;]+;base64,/, "");
+    for (const pageNum of selectedPages) {
+      try {
+        const form = new FormData();
+        form.append("session_id", uploadSessionId);
+        form.append("page", String(pageNum));
+        const res = await fetch(`${API_URL}/analyse-stored`, { method: "POST", body: form });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        const result: PageResult = { pageNum, ...data };
+        results.push(result);
+        initClasses[pageNum] = data.boxes.map((b: BoundingBox) => b.class);
+        setAnalysisProgress(prev => ({ ...prev, done: prev.done + 1 }));
+      } catch (e: unknown) {
+        setError(`Failed to analyse page ${pageNum}: ${e instanceof Error ? e.message : "Unknown error"}`);
+        setStatus("error");
+        return;
+      }
+    }
 
+    setPageResults(results);
+    setAllLiveClasses(initClasses);
+    setReviewingIdx(0);
+    setStatus("reviewing");
+  };
+
+  // ── Per-page feedback submission ──────────────────────────────────────────────
+  const handlePageSubmit = async (correctedBoxes: CorrectedBox[]) => {
+    const current = pageResults[reviewingIdx];
+    if (!current) return;
+
+    const imageB64 = current.image_b64.replace(/^data:[^;]+;base64,/, "");
     try {
       const res = await fetch(`${API_URL}/feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          session_id: results.session_id,
+          session_id: current.session_id,
           image_b64: imageB64,
           boxes: correctedBoxes,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
-      setFinalDetections(submittedDetections);
-      setFinalTotal(submittedTotal);
-      setStatus("done");
+
+      const newSubmitted = new Set(submittedPages).add(current.pageNum);
+      setSubmittedPages(newSubmitted);
+
+      if (newSubmitted.size === pageResults.length) {
+        // All pages confirmed — done
+        setFinalDetections(liveDetections);
+        setFinalTotal(liveTotal);
+        setStatus("done");
+      } else {
+        // Advance to next unconfirmed page
+        const nextIdx = pageResults.findIndex((r, i) => i > reviewingIdx && !newSubmitted.has(r.pageNum));
+        setReviewingIdx(nextIdx !== -1 ? nextIdx : pageResults.findIndex(r => !newSubmitted.has(r.pageNum)));
+        fireToast(`Page ${current.pageNum} saved — ${pageResults.length - newSubmitted.size} page${pageResults.length - newSubmitted.size !== 1 ? "s" : ""} remaining`);
+      }
     } catch (e: unknown) {
       fireToast("Failed to save corrections. Please try again.");
-      console.error("Feedback error:", e);
     }
-  };
-
-  const reset = () => {
-    setStatus("idle");
-    setFile(null);
-    setPages([]);
-    setResults(null);
-    setError("");
-    setShowToast(false);
-    setLiveClasses([]);
-    setFinalDetections([]);
-    setFinalTotal(0);
   };
 
   const downloadCSV = () => {
@@ -190,6 +213,29 @@ export default function Home() {
     a.click();
   };
 
+  const reset = () => {
+    setStatus("idle");
+    setFile(null);
+    setUploadSessionId("");
+    setPages([]);
+    setSelectedPages([]);
+    setPageResults([]);
+    setAnalysisProgress({ done: 0, total: 0 });
+    setReviewingIdx(0);
+    setAllLiveClasses({});
+    setSubmittedPages(new Set());
+    setFinalDetections([]);
+    setFinalTotal(0);
+    setError("");
+    setShowToast(false);
+  };
+
+  const currentResult = pageResults[reviewingIdx];
+  const isLastUnsubmitted =
+    pageResults.filter(r => !submittedPages.has(r.pageNum)).length === 1 &&
+    !submittedPages.has(currentResult?.pageNum);
+
+  // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
@@ -215,7 +261,7 @@ export default function Home() {
 
       <main className="flex-1 max-w-5xl mx-auto w-full px-6 py-10">
 
-        {/* IDLE — Upload */}
+        {/* IDLE */}
         {status === "idle" && (
           <div className="max-w-xl mx-auto">
             <div className="mb-8 text-center">
@@ -245,70 +291,108 @@ export default function Home() {
           </div>
         )}
 
-        {/* PAGE SELECTION */}
+        {/* PAGE SELECTION — multi-select */}
         {status === "selecting" && (
           <div className="max-w-3xl mx-auto">
-            <div className="mb-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-1">Select the floor plan page</h2>
-              <p className="text-gray-500 text-sm">We&apos;ve suggested the most likely floor plan page. Confirm or select a different one.</p>
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-gray-900 mb-1">Select pages to analyse</h2>
+              <p className="text-gray-500 text-sm">
+                We&apos;ve suggested the most likely floor plan page. Select as many pages as you need.
+              </p>
             </div>
+
+            {/* Selection summary */}
+            <div className="flex items-center gap-3 mb-4">
+              <span className="text-sm text-gray-600">
+                <span className="font-semibold text-gray-900">{selectedPages.length}</span> page{selectedPages.length !== 1 ? "s" : ""} selected
+              </span>
+              <button
+                onClick={() => setSelectedPages(pages.map(p => p.page))}
+                className="text-xs text-blue-600 hover:underline"
+              >
+                Select all
+              </button>
+              <button
+                onClick={() => setSelectedPages([])}
+                className="text-xs text-gray-400 hover:underline"
+              >
+                Clear
+              </button>
+            </div>
+
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3 mb-6">
-              {pages.map(p => (
-                <button
-                  key={p.page}
-                  onClick={() => setSelectedPage(p.page)}
-                  className={`relative rounded-lg border-2 overflow-hidden transition-all ${
-                    selectedPage === p.page
-                      ? "border-blue-600 shadow-md"
-                      : "border-gray-200 hover:border-gray-400"
-                  }`}
-                >
-                  <img src={p.url} alt={`Page ${p.page}`} className="w-full object-cover" />
-                  <div className={`absolute inset-0 flex items-end justify-start p-1.5 ${selectedPage === p.page ? "bg-blue-600/10" : ""}`}>
-                    <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
-                      selectedPage === p.page ? "bg-blue-600 text-white" : "bg-white/80 text-gray-700"
-                    }`}>
-                      {p.page}
-                    </span>
-                  </div>
-                  {selectedPage === p.page && (
-                    <div className="absolute top-1.5 right-1.5">
-                      <CheckCircle className="w-4 h-4 text-blue-600 fill-white" />
+              {pages.map(p => {
+                const isSelected = selectedPages.includes(p.page);
+                return (
+                  <button
+                    key={p.page}
+                    onClick={() => togglePage(p.page)}
+                    className={`relative rounded-lg border-2 overflow-hidden transition-all ${
+                      isSelected ? "border-blue-600 shadow-md" : "border-gray-200 hover:border-gray-400"
+                    }`}
+                  >
+                    <img src={p.url} alt={`Page ${p.page}`} className="w-full object-cover" />
+                    <div className={`absolute inset-0 ${isSelected ? "bg-blue-600/10" : ""}`} />
+                    <div className="absolute inset-0 flex items-end justify-start p-1.5">
+                      <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
+                        isSelected ? "bg-blue-600 text-white" : "bg-white/80 text-gray-700"
+                      }`}>
+                        {p.page}
+                      </span>
                     </div>
-                  )}
-                </button>
-              ))}
+                    {isSelected && (
+                      <div className="absolute top-1.5 right-1.5">
+                        <CheckCircle className="w-4 h-4 text-blue-600 fill-white" />
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
+
             <button
               onClick={handleAnalyse}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-lg text-sm font-medium transition-colors"
+              disabled={selectedPages.length === 0}
+              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-lg text-sm font-medium transition-colors"
             >
-              Analyse page {selectedPage}
+              Analyse {selectedPages.length} page{selectedPages.length !== 1 ? "s" : ""}
             </button>
           </div>
         )}
 
-        {/* PROCESSING */}
+        {/* PROCESSING — with progress bar */}
         {status === "processing" && (
           <div className="flex flex-col items-center justify-center py-24 gap-4">
             <Loader2 className="w-8 h-8 text-blue-600 spinner" />
             <div className="text-center">
-              <p className="text-gray-700 font-medium mb-1">Detecting doors…</p>
-              <p className="text-gray-400 text-sm">Running AI analysis on page {selectedPage}</p>
+              <p className="text-gray-700 font-medium mb-1">
+                Analysing page {analysisProgress.done + 1} of {analysisProgress.total}…
+              </p>
+              <p className="text-gray-400 text-sm mb-3">
+                {analysisProgress.done} of {analysisProgress.total} complete
+              </p>
+              <div className="w-48 h-1.5 bg-gray-200 rounded-full overflow-hidden mx-auto">
+                <div
+                  className="h-full bg-blue-600 rounded-full transition-all duration-500"
+                  style={{ width: `${(analysisProgress.done / analysisProgress.total) * 100}%` }}
+                />
+              </div>
             </div>
           </div>
         )}
 
-        {/* REVIEWING — interactive correction editor */}
-        {status === "reviewing" && results && (
-          <div className="space-y-6">
-            {/* Summary row */}
+        {/* REVIEWING — multi-page editor */}
+        {status === "reviewing" && currentResult && (
+          <div className="space-y-4">
+            {/* Summary */}
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-semibold text-gray-900">Review detections</h2>
                 <p className="text-sm text-gray-500 mt-0.5">
-                  {results.total} door{results.total !== 1 ? "s" : ""} detected on page {results.page_used}.
-                  Correct any mistakes below, then submit.
+                  {pageResults.length > 1
+                    ? `${pageResults.length} pages analysed · ${submittedPages.size} of ${pageResults.length} confirmed`
+                    : `${currentResult.total} door${currentResult.total !== 1 ? "s" : ""} detected on page ${currentResult.pageNum}`
+                  }
                 </p>
               </div>
               <button
@@ -320,27 +404,80 @@ export default function Home() {
               </button>
             </div>
 
-            {/* Two-column layout: editor + table */}
+            {/* Page tabs (only shown when multiple pages) */}
+            {pageResults.length > 1 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                {pageResults.map((r, idx) => {
+                  const isDone = submittedPages.has(r.pageNum);
+                  const isCurrent = idx === reviewingIdx;
+                  return (
+                    <button
+                      key={r.pageNum}
+                      onClick={() => setReviewingIdx(idx)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
+                        isCurrent
+                          ? "bg-blue-600 text-white border-blue-600"
+                          : isDone
+                          ? "bg-green-50 text-green-700 border-green-200"
+                          : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+                      }`}
+                    >
+                      Page {r.pageNum}
+                      {isDone && <CheckCircle className="w-3 h-3" />}
+                    </button>
+                  );
+                })}
+                {/* Prev / next */}
+                <div className="ml-auto flex items-center gap-1">
+                  <button
+                    onClick={() => setReviewingIdx(i => Math.max(0, i - 1))}
+                    disabled={reviewingIdx === 0}
+                    className="p-1.5 rounded-lg border border-gray-200 text-gray-400 hover:text-gray-600 disabled:opacity-30 transition-colors"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="text-xs text-gray-400 px-1">
+                    {reviewingIdx + 1} / {pageResults.length}
+                  </span>
+                  <button
+                    onClick={() => setReviewingIdx(i => Math.min(pageResults.length - 1, i + 1))}
+                    disabled={reviewingIdx === pageResults.length - 1}
+                    className="p-1.5 rounded-lg border border-gray-200 text-gray-400 hover:text-gray-600 disabled:opacity-30 transition-colors"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Two-column layout */}
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-              {/* Plan editor (takes 2/3 width on xl) */}
               <div className="xl:col-span-2">
                 <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">
-                  Detected Doors — click a box to edit
+                  Page {currentResult.pageNum} — click a box to edit
                 </h3>
                 <PlanEditor
-                  imageSrc={results.image_b64}
-                  boxes={results.boxes}
-                  imageWidth={results.image_width}
-                  imageHeight={results.image_height}
-                  onSubmit={handleFeedback}
-                  onBoxesChange={setLiveClasses}
+                  key={currentResult.pageNum}
+                  imageSrc={currentResult.image_b64}
+                  boxes={currentResult.boxes}
+                  imageWidth={currentResult.image_width}
+                  imageHeight={currentResult.image_height}
+                  onSubmit={handlePageSubmit}
+                  onBoxesChange={(classes) =>
+                    setAllLiveClasses(prev => ({ ...prev, [currentResult.pageNum]: classes }))
+                  }
+                  submitLabel={
+                    isLastUnsubmitted
+                      ? "Confirm & Submit All"
+                      : `Confirm page ${currentResult.pageNum} →`
+                  }
                 />
               </div>
 
-              {/* Door schedule table — updates live as boxes are edited */}
+              {/* Combined schedule */}
               <div>
                 <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">
-                  Door Schedule
+                  {pageResults.length > 1 ? "Combined Door Schedule" : "Door Schedule"}
                 </h3>
                 <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
                   <table className="w-full text-sm">
@@ -378,6 +515,7 @@ export default function Home() {
                     <li>Drag a box to reposition it</li>
                     <li>Use corner handles to resize</li>
                     <li>Use &ldquo;+ Add door&rdquo; to draw a new box</li>
+                    {pageResults.length > 1 && <li>Use page tabs to switch between plan pages</li>}
                   </ul>
                 </div>
               </div>
@@ -385,7 +523,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* DONE — final summary */}
+        {/* DONE */}
         {status === "done" && (
           <div className="max-w-lg mx-auto">
             <div className="text-center mb-8">
@@ -394,7 +532,8 @@ export default function Home() {
               </div>
               <h2 className="text-xl font-semibold text-gray-900 mb-1">Analysis complete</h2>
               <p className="text-sm text-gray-500">
-                {finalTotal} door{finalTotal !== 1 ? "s" : ""} confirmed on page {results?.page_used} of{" "}
+                {finalTotal} door{finalTotal !== 1 ? "s" : ""} confirmed
+                {pageResults.length > 1 ? ` across ${pageResults.length} pages` : ` on page ${pageResults[0]?.pageNum}`} of{" "}
                 <span className="font-medium text-gray-700">{file?.name}</span>
               </p>
             </div>
@@ -460,7 +599,6 @@ export default function Home() {
         <p className="text-xs text-gray-400">Independent Doors — Internal use only</p>
       </footer>
 
-      {/* Toast notification */}
       {showToast && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-gray-900 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-lg animate-fade-in">
           <CheckCircle className="w-4 h-4 text-green-400 shrink-0" />
