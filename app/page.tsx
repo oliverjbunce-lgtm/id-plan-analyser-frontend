@@ -1,5 +1,5 @@
 "use client";
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { Upload, FileText, CheckCircle, AlertCircle, Download, RotateCcw, Loader2 } from "lucide-react";
 import type { BoundingBox, CorrectedBox } from "./components/types";
@@ -14,7 +14,7 @@ const PlanEditor = dynamic(() => import("./components/PlanEditor"), {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-type Status = "idle" | "uploading" | "selecting" | "processing" | "done" | "reviewing" | "error";
+type Status = "idle" | "uploading" | "selecting" | "processing" | "reviewing" | "done" | "error";
 
 interface PageThumb { page: number; url: string; }
 interface Detection { class: string; count: number; }
@@ -55,6 +55,26 @@ export default function Home() {
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Live box tracking — updated by PlanEditor on every edit
+  const [liveClasses, setLiveClasses] = useState<string[]>([]);
+  // Final snapshot saved at submission time
+  const [finalDetections, setFinalDetections] = useState<Detection[]>([]);
+  const [finalTotal, setFinalTotal] = useState(0);
+
+  // Compute live detection schedule from current editor state
+  const liveDetections = useMemo<Detection[]>(() => {
+    const counts: Record<string, number> = {};
+    for (const cls of liveClasses) counts[cls] = (counts[cls] || 0) + 1;
+    return Object.entries(counts)
+      .map(([class_, count]) => ({ class: class_, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [liveClasses]);
+  const liveTotal = liveClasses.length;
+
+  // Unified source for whichever state we're in
+  const displayDetections = status === "done" ? finalDetections : liveDetections;
+  const displayTotal = status === "done" ? finalTotal : liveTotal;
 
   const fireToast = (msg: string) => {
     setToastMessage(msg);
@@ -116,7 +136,10 @@ export default function Home() {
   const handleFeedback = async (correctedBoxes: CorrectedBox[]) => {
     if (!results) return;
 
-    // Strip the data URI prefix before sending
+    // Snapshot the live schedule at submission time before transitioning
+    const submittedDetections = liveDetections;
+    const submittedTotal = liveTotal;
+
     const imageB64 = results.image_b64.replace(/^data:[^;]+;base64,/, "");
 
     try {
@@ -130,7 +153,9 @@ export default function Home() {
         }),
       });
       if (!res.ok) throw new Error(await res.text());
-      fireToast("Corrections saved — thank you!");
+      setFinalDetections(submittedDetections);
+      setFinalTotal(submittedTotal);
+      setStatus("done");
     } catch (e: unknown) {
       fireToast("Failed to save corrections. Please try again.");
       console.error("Feedback error:", e);
@@ -144,22 +169,24 @@ export default function Home() {
     setResults(null);
     setError("");
     setShowToast(false);
+    setLiveClasses([]);
+    setFinalDetections([]);
+    setFinalTotal(0);
   };
 
   const downloadCSV = () => {
-    if (!results) return;
     const rows = [
       ["Door Type", "Quantity"],
-      ...results.detections.map(d => [CLASS_LABELS[d.class] || d.class, d.count]),
+      ...displayDetections.map(d => [CLASS_LABELS[d.class] || d.class, d.count]),
       ["", ""],
-      ["Total", results.total],
+      ["Total", displayTotal],
     ];
     const csv = rows.map(r => r.join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${file?.name.replace(".pdf", "")}-doors.csv`;
+    a.download = `${file?.name.replace(".pdf", "") ?? "plan"}-doors.csv`;
     a.click();
   };
 
@@ -306,10 +333,11 @@ export default function Home() {
                   imageWidth={results.image_width}
                   imageHeight={results.image_height}
                   onSubmit={handleFeedback}
+                  onBoxesChange={setLiveClasses}
                 />
               </div>
 
-              {/* Door schedule table (1/3 width on xl) */}
+              {/* Door schedule table — updates live as boxes are edited */}
               <div>
                 <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">
                   Door Schedule
@@ -323,17 +351,21 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody>
-                      {results.detections.map((d, i) => (
+                      {displayDetections.length > 0 ? displayDetections.map((d, i) => (
                         <tr key={i} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
                           <td className="px-4 py-3 text-gray-800">{CLASS_LABELS[d.class] || d.class}</td>
                           <td className="px-4 py-3 text-right font-medium text-gray-900">{d.count}</td>
                         </tr>
-                      ))}
+                      )) : (
+                        <tr>
+                          <td colSpan={2} className="px-4 py-6 text-center text-xs text-gray-400">No doors detected yet</td>
+                        </tr>
+                      )}
                     </tbody>
                     <tfoot>
                       <tr className="bg-gray-50">
                         <td className="px-4 py-3 text-sm font-semibold text-gray-900">Total</td>
-                        <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{results.total}</td>
+                        <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">{displayTotal}</td>
                       </tr>
                     </tfoot>
                   </table>
@@ -349,6 +381,64 @@ export default function Home() {
                   </ul>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* DONE — final summary */}
+        {status === "done" && (
+          <div className="max-w-lg mx-auto">
+            <div className="text-center mb-8">
+              <div className="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <CheckCircle className="w-7 h-7 text-green-600" />
+              </div>
+              <h2 className="text-xl font-semibold text-gray-900 mb-1">Analysis complete</h2>
+              <p className="text-sm text-gray-500">
+                {finalTotal} door{finalTotal !== 1 ? "s" : ""} confirmed on page {results?.page_used} of{" "}
+                <span className="font-medium text-gray-700">{file?.name}</span>
+              </p>
+            </div>
+
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden mb-4">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100 bg-gray-50">
+                    <th className="text-left px-4 py-3 text-xs text-gray-500 font-medium">Door Type</th>
+                    <th className="text-right px-4 py-3 text-xs text-gray-500 font-medium">Qty</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {finalDetections.map((d, i) => (
+                    <tr key={i} className="border-b border-gray-50">
+                      <td className="px-4 py-3 text-gray-800">{CLASS_LABELS[d.class] || d.class}</td>
+                      <td className="px-4 py-3 text-right font-semibold text-gray-900">{d.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-gray-50">
+                    <td className="px-4 py-3 text-sm font-bold text-gray-900">Total</td>
+                    <td className="px-4 py-3 text-right text-sm font-bold text-gray-900">{finalTotal}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={downloadCSV}
+                className="flex-1 flex items-center justify-center gap-2 border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                Download CSV
+              </button>
+              <button
+                onClick={reset}
+                className="flex-1 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Analyse another plan
+              </button>
             </div>
           </div>
         )}

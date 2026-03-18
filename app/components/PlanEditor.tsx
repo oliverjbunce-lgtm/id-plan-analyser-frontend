@@ -81,6 +81,7 @@ interface PlanEditorProps {
   imageWidth: number;
   imageHeight: number;
   onSubmit: (correctedBoxes: CorrectedBox[]) => void;
+  onBoxesChange?: (classes: string[]) => void;
 }
 
 // ── ID generator ───────────────────────────────────────────────────────────────
@@ -97,6 +98,7 @@ export default function PlanEditor({
   imageWidth,
   imageHeight,
   onSubmit,
+  onBoxesChange,
 }: PlanEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -192,6 +194,11 @@ export default function PlanEditor({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedId]);
+
+  // ── Notify parent of box class changes (for live schedule) ───────────────────
+  useEffect(() => {
+    onBoxesChange?.(editBoxes.map((b) => b.cls));
+  }, [editBoxes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Zoom helpers ───────────────────────────────────────────────────────────────
   const zoomToPoint = useCallback(
