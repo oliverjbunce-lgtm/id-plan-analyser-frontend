@@ -5,6 +5,11 @@ const PUBLIC_PATHS = ["/join", "/api/join", "/api/admin", "/_next", "/favicon.ic
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
+  // Demo mode — bypass all auth
+  if (process.env.DEMO_MODE === "true") {
+    return NextResponse.next();
+  }
+
   // Allow public paths
   if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
     return NextResponse.next();
