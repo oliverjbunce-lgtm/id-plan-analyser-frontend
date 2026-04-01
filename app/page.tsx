@@ -66,6 +66,38 @@ const CLASS_LABELS: Record<string, string> = {
   Barn_wall_slider:             "Barn Wall Slider",
 };
 
+// Must match CLASS_IDS in PlanEditor.tsx (kept in sync manually)
+const CLASS_COLORS: Record<string, string> = {
+  L_prehung_door:               "#3B82F6",
+  R_prehung_door:               "#8B5CF6",
+  Double_prehung_door:          "#EC4899",
+  S_cavity_slider:              "#10B981",
+  D_cavity_slider:              "#059669",
+  Wardrobe_sliding_two_doors_1: "#F59E0B",
+  Wardrobe_sliding_two_doors_2: "#D97706",
+  Wardrobe_sliding_three_doors: "#EF4444",
+  Wardrobe_sliding_four_doors:  "#DC2626",
+  Bi_folding_door:              "#6366F1",
+  D_bi_folding_door:            "#4F46E5",
+  Barn_wall_slider:             "#14B8A6",
+};
+
+// Reverse of CLASS_IDS in PlanEditor.tsx
+const CLASS_ID_TO_NAME: Record<number, string> = {
+  0:  "L_prehung_door",
+  1:  "R_prehung_door",
+  2:  "Double_prehung_door",
+  3:  "S_cavity_slider",
+  4:  "D_cavity_slider",
+  5:  "Wardrobe_sliding_two_doors_1",
+  6:  "Wardrobe_sliding_two_doors_2",
+  7:  "Wardrobe_sliding_four_doors",
+  8:  "Bi_folding_door",
+  9:  "Barn_wall_slider",
+  10: "D_bi_folding_door",
+  11: "Wardrobe_sliding_three_doors",
+};
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -79,6 +111,7 @@ export default function Home() {
   const [reviewingIdx, setReviewingIdx]       = useState(0);
   const [allLiveClasses, setAllLiveClasses]   = useState<Record<number, string[]>>({});
   const [submittedPages, setSubmittedPages]   = useState<Set<number>>(new Set());
+  const [correctedBoxesPerPage, setCorrectedBoxesPerPage] = useState<Record<number, CorrectedBox[]>>({});
   const [finalDetections, setFinalDetections] = useState<Detection[]>([]);
   const [finalTotal, setFinalTotal]           = useState(0);
   const [error, setError]                     = useState<string>("");
@@ -217,6 +250,7 @@ export default function Home() {
 
       const newSubmitted = new Set(submittedPages).add(current.pageNum);
       setSubmittedPages(newSubmitted);
+      setCorrectedBoxesPerPage(prev => ({ ...prev, [current.pageNum]: correctedBoxes }));
 
       if (newSubmitted.size === pageResults.length) {
         setFinalDetections(liveDetections);
@@ -248,6 +282,58 @@ export default function Home() {
     a.href     = url;
     a.download = `${file?.name.replace(".pdf", "") ?? "plan"}-doors.csv`;
     a.click();
+  };
+
+  // ── Annotated image compositing ───────────────────────────────────────────
+
+  const composeAnnotatedImages = async (): Promise<string[]> => {
+    const results: string[] = [];
+    for (const page of pageResults) {
+      if (!submittedPages.has(page.pageNum)) continue;
+      const boxes = correctedBoxesPerPage[page.pageNum] || [];
+
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d")!;
+
+      const img = new window.Image();
+      const src = page.image_b64.startsWith("data:")
+        ? page.image_b64
+        : `data:image/png;base64,${page.image_b64}`;
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = reject;
+        img.src = src;
+      });
+
+      canvas.width  = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      ctx.drawImage(img, 0, 0);
+
+      const lineWidth = Math.max(2, canvas.width / 500);
+      const fontSize  = Math.max(11, Math.round(canvas.width / 70));
+
+      for (const box of boxes) {
+        const className = CLASS_ID_TO_NAME[box.class_id] ?? "unknown";
+        const color     = CLASS_COLORS[className] ?? "#6B7280";
+        const label     = CLASS_LABELS[className] ?? className;
+
+        const x = (box.x_center - box.width  / 2) * canvas.width;
+        const y = (box.y_center - box.height / 2) * canvas.height;
+        const w = box.width  * canvas.width;
+        const h = box.height * canvas.height;
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth   = lineWidth;
+        ctx.strokeRect(x, y, w, h);
+
+        ctx.font      = `bold ${fontSize}px sans-serif`;
+        ctx.fillStyle = color;
+        ctx.fillText(label, x, Math.max(y - 4, fontSize + 2));
+      }
+
+      results.push(canvas.toDataURL("image/png"));
+    }
+    return results;
   };
 
   // ── Send to Portal ────────────────────────────────────────────────────────
@@ -284,6 +370,8 @@ export default function Home() {
     }
 
     try {
+      const annotatedImages = await composeAnnotatedImages();
+
       const res = await fetch(`${PORTAL_URL}/api/orders/import`, {
         method: 'POST',
         headers: {
@@ -291,9 +379,10 @@ export default function Home() {
           'x-api-key':    PORTAL_API_KEY,
         },
         body: JSON.stringify({
-          email:   portalEmail,
+          email:           portalEmail,
           doors,
-          jobName: file?.name.replace(/\.pdf$/i, '') || 'Floor Plan Import',
+          jobName:         file?.name.replace(/\.pdf$/i, '') || 'Floor Plan Import',
+          floorPlanImages: annotatedImages,
         }),
       });
 
@@ -328,6 +417,7 @@ export default function Home() {
     setReviewingIdx(0);
     setAllLiveClasses({});
     setSubmittedPages(new Set());
+    setCorrectedBoxesPerPage({});
     setFinalDetections([]);
     setFinalTotal(0);
     setError("");
