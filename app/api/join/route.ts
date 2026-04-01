@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { initDb, getDb } from "@/lib/db";
+import { signSession } from "@/lib/auth";
 import { randomUUID } from "crypto";
 
 export const dynamic = "force-dynamic";
@@ -27,9 +28,11 @@ export async function POST(req: NextRequest) {
     { sql: "INSERT INTO ai_sessions (id, token_id) VALUES (?, ?)", args: [sessionId, token] },
   ], "write");
 
+  // Sign a JWT for the session — no DB lookup needed in middleware
+  const signedToken = await signSession(sessionId);
+
   const res = NextResponse.json({ ok: true });
-  // Set long-lived session cookie (1 year)
-  res.cookies.set("ai_session", sessionId, {
+  res.cookies.set("ai_session", signedToken, {
     httpOnly: true,
     secure: true,
     sameSite: "lax",

@@ -1,19 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { initDb, getDb } from "@/lib/db";
+import { verifySession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  const sessionId = req.headers.get("x-session-id");
-  if (!sessionId) return NextResponse.json({ error: "no session" }, { status: 401 });
+  const token = req.headers.get("x-session-token") || req.cookies.get("ai_session")?.value;
+  if (!token) return NextResponse.json({ error: "no session" }, { status: 401 });
 
-  await initDb();
-  const db = getDb();
-  const result = await db.execute({
-    sql: "SELECT id FROM ai_sessions WHERE id = ?",
-    args: [sessionId],
-  });
+  const sessionId = await verifySession(token);
+  if (!sessionId) return NextResponse.json({ error: "invalid" }, { status: 401 });
 
-  if (!result.rows[0]) return NextResponse.json({ error: "invalid" }, { status: 401 });
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, sessionId });
 }

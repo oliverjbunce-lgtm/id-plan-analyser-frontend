@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { verifySession } from "./lib/auth";
 
 const PUBLIC_PATHS = ["/join", "/api/join", "/api/admin", "/api/verify", "/_next", "/favicon.ico"];
 
@@ -15,24 +16,19 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // Admin page — protected by ADMIN_KEY cookie check handled in the page itself
+  // Admin page — handled by the page itself
   if (pathname.startsWith("/admin")) {
     return NextResponse.next();
   }
 
-  // Check session cookie
-  const session = req.cookies.get("ai_session")?.value;
-  if (!session) {
+  // Verify JWT session cookie — no network call needed
+  const token = req.cookies.get("ai_session")?.value;
+  if (!token) {
     return NextResponse.redirect(new URL("/join", req.url));
   }
 
-  // Verify session exists in DB via internal API
-  const verifyUrl = new URL("/api/verify", req.url);
-  const verifyRes = await fetch(verifyUrl, {
-    headers: { "x-session-id": session },
-  });
-
-  if (!verifyRes.ok) {
+  const sessionId = await verifySession(token);
+  if (!sessionId) {
     const res = NextResponse.redirect(new URL("/join", req.url));
     res.cookies.delete("ai_session");
     return res;
