@@ -107,6 +107,8 @@ export default function PlanEditor({
   const trRef = useRef<Konva.Transformer>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
   const panStartRef = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null);
+  // Pinch-to-zoom: track last touch distance
+  const lastDist = useRef<number | null>(null);
 
   // Container size (tracked by ResizeObserver)
   const [containerWidth, setContainerWidth] = useState(800);
@@ -142,6 +144,19 @@ export default function PlanEditor({
 
   // Fullscreen
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Mobile detection
+  const [isMobile, setIsMobile] = useState(false);
+
+  // Interaction mode: 'pan' (default on mobile) | 'draw' (default on desktop)
+  const [interactionMode, setInteractionMode] = useState<'pan' | 'draw'>('draw');
+
+  // ── Mobile detection on mount ──────────────────────────────────────────────
+  useEffect(() => {
+    const mobile = window.innerWidth < 768;
+    setIsMobile(mobile);
+    setInteractionMode(mobile ? 'pan' : 'draw');
+  }, []);
 
   // ── Responsive sizing ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -244,11 +259,61 @@ export default function PlanEditor({
     zoomToPoint(pointer, direction > 0 ? stageScale * ZOOM_FACTOR : stageScale / ZOOM_FACTOR);
   };
 
+  // ── Pinch-to-zoom (touch) ─────────────────────────────────────────────────────
+  const onStageTouchMove = (e: Konva.KonvaEventObject<TouchEvent>) => {
+    const touch1 = e.evt.touches[0];
+    const touch2 = e.evt.touches[1];
+    if (!touch1 || !touch2) return; // single finger = pan (handled by Konva drag)
+    e.evt.preventDefault();
+
+    const dist = Math.hypot(
+      touch1.clientX - touch2.clientX,
+      touch1.clientY - touch2.clientY
+    );
+
+    if (!lastDist.current) { lastDist.current = dist; return; }
+
+    const scale = (dist / lastDist.current) * stageScale;
+    lastDist.current = dist;
+
+    const stage = stageRef.current;
+    if (!stage) return;
+    const center = {
+      x: (touch1.clientX + touch2.clientX) / 2,
+      y: (touch1.clientY + touch2.clientY) / 2,
+    };
+    zoomToPoint(center, Math.min(Math.max(scale, MIN_SCALE), MAX_SCALE));
+  };
+
+  const onStageTouchEnd = () => {
+    lastDist.current = null;
+  };
+
+  // ── Stage drag sync (for Konva draggable in pan mode) ─────────────────────────
+  const onStageDragMove = () => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    setStageOffset({ x: stage.x(), y: stage.y() });
+  };
+
+  const onStageDragEnd = () => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    setStageOffset({ x: stage.x(), y: stage.y() });
+  };
+
   // ── Stage mouse handlers ───────────────────────────────────────────────────────
   const onStageMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
     // bgImage has listening={false}, so clicks on it bubble to the stage
     const isBackground = e.target === e.target.getStage();
 
+    // In pan mode, Konva's draggable handles panning — just deselect on background click
+    if (interactionMode === 'pan') {
+      if (isBackground) setSelectedId(null);
+      return;
+    }
+
+    // Draw mode
     if (addMode) {
       if (!isBackground) return;
       const stage = stageRef.current;
@@ -278,7 +343,7 @@ export default function PlanEditor({
     const pos = stage.getPointerPosition();
     if (!pos) return;
 
-    if (addMode && drawStartRef.current) {
+    if (interactionMode === 'draw' && addMode && drawStartRef.current) {
       const lp = toLayer(pos);
       const start = drawStartRef.current;
       setDrawRect({
@@ -290,14 +355,14 @@ export default function PlanEditor({
       return;
     }
 
-    if (isPanning && panStartRef.current) {
+    if (interactionMode === 'draw' && isPanning && panStartRef.current) {
       const { px, py, ox, oy } = panStartRef.current;
       setStageOffset({ x: ox + (pos.x - px), y: oy + (pos.y - py) });
     }
   };
 
   const onStageMouseUp = () => {
-    if (addMode && drawRect) {
+    if (interactionMode === 'draw' && addMode && drawRect) {
       const minSize = 8 / stageScale;
       if (drawRect.w > minSize && drawRect.h > minSize) {
         const id = genId();
@@ -369,6 +434,8 @@ export default function PlanEditor({
     setEditBoxes((prev) => prev.map((b) => (b.id === selectedId ? { ...b, cls } : b)));
   };
 
+  const deselectBox = () => setSelectedId(null);
+
   // ── Submit ─────────────────────────────────────────────────────────────────────
   const handleSubmit = () => {
     if (editBoxes.length === 0) {
@@ -402,7 +469,13 @@ export default function PlanEditor({
     : 0;
 
   // ── Cursor ─────────────────────────────────────────────────────────────────────
-  const cursor = addMode ? "crosshair" : isPanning ? "grabbing" : "grab";
+  const cursor = interactionMode === 'pan'
+    ? 'grab'
+    : addMode
+    ? "crosshair"
+    : isPanning
+    ? "grabbing"
+    : "default";
 
   // ── Render ─────────────────────────────────────────────────────────────────────
   return (
@@ -410,29 +483,61 @@ export default function PlanEditor({
 
       {/* ── Toolbar ── */}
       <div className={`flex flex-wrap items-center gap-2 ${isFullscreen ? "px-4 pt-3 pb-2 border-b border-gray-200 shrink-0" : ""}`}>
-        <button
-          onClick={() => { setAddMode((m) => !m); setSelectedId(null); }}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border ${
-            addMode
-              ? "bg-blue-600 text-white border-blue-600"
-              : "bg-white border-gray-300 text-gray-700 hover:bg-gray-50"
-          }`}
-        >
-          + Add door
-        </button>
 
-        {addMode && (
+        {/* Pan / Draw mode toggle */}
+        <div className="flex items-center rounded-lg border border-gray-200 overflow-hidden">
+          <button
+            onClick={() => { setInteractionMode('pan'); setAddMode(false); }}
+            title="Pan mode — drag to navigate"
+            className={`flex items-center gap-1 px-2.5 py-2 sm:px-3 sm:py-1.5 text-sm font-medium transition-colors ${
+              interactionMode === 'pan'
+                ? "bg-blue-600 text-white"
+                : "bg-white text-gray-600 hover:bg-gray-50"
+            }`}
+          >
+            <span>✋</span>
+            <span className="hidden sm:inline">Pan</span>
+          </button>
+          <button
+            onClick={() => setInteractionMode('draw')}
+            title="Draw mode — add and edit boxes"
+            className={`flex items-center gap-1 px-2.5 py-2 sm:px-3 sm:py-1.5 text-sm font-medium transition-colors border-l border-gray-200 ${
+              interactionMode === 'draw'
+                ? "bg-blue-600 text-white"
+                : "bg-white text-gray-600 hover:bg-gray-50"
+            }`}
+          >
+            <span>✏️</span>
+            <span className="hidden sm:inline">Draw</span>
+          </button>
+        </div>
+
+        {/* Add door button — only in draw mode */}
+        {interactionMode === 'draw' && (
+          <button
+            onClick={() => { setAddMode((m) => !m); setSelectedId(null); }}
+            className={`flex items-center gap-1.5 px-3 py-2 sm:py-1.5 rounded-lg text-sm font-medium transition-colors border ${
+              addMode
+                ? "bg-blue-600 text-white border-blue-600"
+                : "bg-white border-gray-300 text-gray-700 hover:bg-gray-50"
+            }`}
+          >
+            + Add door
+          </button>
+        )}
+
+        {addMode && interactionMode === 'draw' && (
           <>
             <select
               value={addClass}
               onChange={(e) => setAddClass(e.target.value)}
-              className="text-sm border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="text-sm border border-gray-300 rounded-lg px-2 py-2 sm:py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               {CLASS_LIST.map((c) => (
                 <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
               ))}
             </select>
-            <span className="text-xs text-blue-600">Click and drag on the plan to draw a box</span>
+            <span className="text-xs text-blue-600 hidden sm:inline">Click and drag on the plan to draw a box</span>
           </>
         )}
 
@@ -440,31 +545,43 @@ export default function PlanEditor({
         <div className="ml-auto flex items-center gap-1">
           <button
             onClick={() => zoomToPoint({ x: containerWidth / 2, y: stageH / 2 }, stageScale * ZOOM_FACTOR)}
-            title="Zoom in (scroll up)"
-            className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors"
+            title="Zoom in"
+            className="p-2 sm:p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors"
           >
-            <ZoomIn className="w-3.5 h-3.5" />
+            <ZoomIn className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
           </button>
           <button
             onClick={() => zoomToPoint({ x: containerWidth / 2, y: stageH / 2 }, stageScale / ZOOM_FACTOR)}
-            title="Zoom out (scroll down)"
-            className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors"
+            title="Zoom out"
+            className="p-2 sm:p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors"
           >
-            <ZoomOut className="w-3.5 h-3.5" />
+            <ZoomOut className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
           </button>
           <button
             onClick={fitToView}
             title="Reset zoom"
-            className="px-2 py-1 rounded-lg border border-gray-200 text-xs text-gray-500 hover:bg-gray-50 transition-colors tabular-nums"
+            className="px-2 py-1.5 sm:py-1 rounded-lg border border-gray-200 text-xs text-gray-500 hover:bg-gray-50 transition-colors tabular-nums"
           >
             {Math.round(stageScale * 100)}%
           </button>
           <button
             onClick={() => setIsFullscreen((f) => !f)}
             title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-            className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors"
+            className={`flex items-center gap-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors ${
+              isMobile ? "px-3 py-2 text-xs font-medium" : "p-1.5"
+            }`}
           >
-            {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+            {isFullscreen ? (
+              <>
+                <Minimize2 className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+                {isMobile && <span>Exit</span>}
+              </>
+            ) : (
+              <>
+                <Maximize2 className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+                {isMobile && <span>Fullscreen</span>}
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -475,7 +592,11 @@ export default function PlanEditor({
         className={`relative w-full select-none overflow-hidden bg-gray-100 ${
           isFullscreen ? "flex-1" : "rounded-xl border border-gray-200"
         }`}
-        style={!isFullscreen ? { height: canvasHeight } : undefined}
+        style={
+          !isFullscreen
+            ? { height: canvasHeight, minHeight: isMobile ? "60vh" : undefined }
+            : undefined
+        }
       >
         {containerWidth > 0 && (
           <Stage
@@ -486,10 +607,15 @@ export default function PlanEditor({
             y={stageOffset.y}
             scaleX={stageScale}
             scaleY={stageScale}
+            draggable={interactionMode === 'pan' && !addMode}
             onWheel={onStageWheel}
             onMouseDown={onStageMouseDown}
             onMouseMove={onStageMouseMove}
             onMouseUp={onStageMouseUp}
+            onDragMove={onStageDragMove}
+            onDragEnd={onStageDragEnd}
+            onTouchMove={onStageTouchMove}
+            onTouchEnd={onStageTouchEnd}
             style={{ cursor, display: "block" }}
           >
             <Layer>
@@ -532,7 +658,7 @@ export default function PlanEditor({
                       fill={isSelected ? color + "38" : color + "18"}
                       stroke={color}
                       strokeWidth={sw}
-                      draggable={!addMode}
+                      draggable={!addMode && interactionMode === 'draw'}
                       onClick={() => { if (!addMode) setSelectedId(box.id); }}
                       onTap={() => { if (!addMode) setSelectedId(box.id); }}
                       onDragEnd={(e) => handleDragEnd(box.id, e)}
@@ -593,8 +719,8 @@ export default function PlanEditor({
           </Stage>
         )}
 
-        {/* Floating edit panel for selected box */}
-        {selectedBox && (
+        {/* Edit panel — floating on desktop, bottom sheet on mobile */}
+        {selectedBox && !isMobile && (
           <div
             className="absolute z-10 bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex items-center gap-2 pointer-events-auto"
             style={{ left: panelLeft, top: panelTop, minWidth: 220 }}
@@ -618,11 +744,41 @@ export default function PlanEditor({
         )}
       </div>
 
+      {/* Mobile bottom sheet edit panel */}
+      {selectedBox && isMobile && (
+        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-4 flex items-center gap-3 shadow-xl z-50">
+          <select
+            value={selectedBox.cls}
+            onChange={(e) => changeSelectedClass(e.target.value)}
+            className="flex-1 text-base border border-gray-300 rounded-xl px-3 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            {CLASS_LIST.map((c) => (
+              <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
+            ))}
+          </select>
+          <button
+            onClick={deleteSelected}
+            className="text-red-500 bg-red-50 px-4 py-3 rounded-xl font-semibold text-sm whitespace-nowrap"
+          >
+            Delete
+          </button>
+          <button
+            onClick={deselectBox}
+            className="text-gray-400 bg-gray-100 px-4 py-3 rounded-xl text-sm whitespace-nowrap"
+          >
+            Done
+          </button>
+        </div>
+      )}
+
       {/* ── Footer ── */}
-      <div className={`flex items-center justify-between gap-4 ${isFullscreen ? "px-4 pb-3 shrink-0" : ""}`}>
+      <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${isFullscreen ? "px-4 pb-3 shrink-0" : ""}`}>
         <p className="text-xs text-gray-400">
           {editBoxes.length} box{editBoxes.length !== 1 ? "es" : ""} ·{" "}
-          scroll to zoom · drag background to pan · click box to edit · <kbd className="font-mono">Del</kbd> to remove
+          {isMobile
+            ? "pinch to zoom · drag to pan · tap box to edit"
+            : <>scroll to zoom · drag background to pan · click box to edit · <kbd className="font-mono">Del</kbd> to remove</>
+          }
         </p>
         <div className="flex items-center gap-3">
           {emptyWarning && (
@@ -632,7 +788,7 @@ export default function PlanEditor({
           )}
           <button
             onClick={handleSubmit}
-            className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
+            className="w-full sm:w-auto bg-green-600 hover:bg-green-700 text-white px-4 py-3 sm:py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
           >
             {submitLabel}
           </button>

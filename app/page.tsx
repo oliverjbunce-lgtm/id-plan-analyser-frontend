@@ -459,7 +459,7 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="flex-1 max-w-5xl mx-auto w-full px-6 py-10">
+      <main className="flex-1 max-w-5xl mx-auto w-full px-4 py-6 sm:px-6 sm:py-10">
 
         {/* ── IDLE ── */}
         {status === "idle" && (
@@ -469,7 +469,7 @@ export default function Home() {
               <p className="text-black/40 text-sm">Upload a PDF and the AI will detect and count all door types automatically.</p>
             </div>
             <div
-              className={`upload-zone rounded-[24px] p-14 text-center cursor-pointer bg-white ${dragOver ? "drag-over" : ""}`}
+              className={`upload-zone rounded-[24px] p-8 sm:p-14 text-center cursor-pointer bg-white ${dragOver ? "drag-over" : ""}`}
               style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.04)', border: dragOver ? '2px dashed #007AFF' : undefined }}
               onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
               onDragLeave={() => setDragOver(false)}
@@ -479,8 +479,8 @@ export default function Home() {
               <div className="w-14 h-14 rounded-[16px] bg-[#007AFF]/10 flex items-center justify-center mx-auto mb-4">
                 <Upload className="w-6 h-6 text-[#007AFF]" />
               </div>
-              <p className="text-[#0b1f33] font-semibold mb-1">Drop your PDF here</p>
-              <p className="text-black/40 text-sm">or click to browse</p>
+              <p className="text-[#0b1f33] font-semibold text-base sm:text-lg mb-1">Drop your PDF here</p>
+              <p className="text-black/40 text-sm sm:text-base">or tap to browse</p>
               <input ref={inputRef} type="file" accept=".pdf,.PDF" className="hidden"
                 onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])} />
             </div>
@@ -575,7 +575,7 @@ export default function Home() {
         {/* ── REVIEWING ── */}
         {status === "reviewing" && currentResult && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-start sm:items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-semibold text-[#0b1f33]">Review detections</h2>
                 <p className="text-sm text-black/40 mt-0.5">
@@ -585,7 +585,7 @@ export default function Home() {
                 </p>
               </div>
               <button onClick={downloadCSV}
-                className="flex items-center gap-1.5 text-xs font-medium text-black/40 hover:text-[#007AFF] transition-colors bg-black/5 hover:bg-[#007AFF]/8 px-3 py-1.5 rounded-[10px]">
+                className="shrink-0 flex items-center gap-1.5 text-xs font-medium text-black/40 hover:text-[#007AFF] transition-colors bg-black/5 hover:bg-[#007AFF]/8 px-3 py-2 sm:py-1.5 rounded-[10px]">
                 <Download className="w-3.5 h-3.5" />
                 Export CSV
               </button>
@@ -593,25 +593,27 @@ export default function Home() {
 
             {/* Page tabs */}
             {pageResults.length > 1 && (
-              <div className="flex items-center gap-2 flex-wrap">
-                {pageResults.map((r, idx) => {
-                  const isDone    = submittedPages.has(r.pageNum);
-                  const isCurrent = idx === reviewingIdx;
-                  return (
-                    <button key={r.pageNum} onClick={() => setReviewingIdx(idx)}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-semibold transition-all border ${
-                        isCurrent
-                          ? "bg-[#007AFF] text-white border-[#007AFF] shadow-sm shadow-[#007AFF]/20"
-                          : isDone
-                          ? "bg-green-50 text-green-700 border-green-200"
-                          : "bg-white text-black/50 border-black/8 hover:border-black/20"
-                      }`}>
-                      Page {r.pageNum}
-                      {isDone && <CheckCircle className="w-3 h-3" />}
-                    </button>
-                  );
-                })}
-                <div className="ml-auto flex items-center gap-1">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                <div className="overflow-x-auto flex gap-2 pb-1 flex-1 min-w-0">
+                  {pageResults.map((r, idx) => {
+                    const isDone    = submittedPages.has(r.pageNum);
+                    const isCurrent = idx === reviewingIdx;
+                    return (
+                      <button key={r.pageNum} onClick={() => setReviewingIdx(idx)}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-semibold transition-all border shrink-0 ${
+                          isCurrent
+                            ? "bg-[#007AFF] text-white border-[#007AFF] shadow-sm shadow-[#007AFF]/20"
+                            : isDone
+                            ? "bg-green-50 text-green-700 border-green-200"
+                            : "bg-white text-black/50 border-black/8 hover:border-black/20"
+                        }`}>
+                        Page {r.pageNum}
+                        {isDone && <CheckCircle className="w-3 h-3" />}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
                   <button onClick={() => setReviewingIdx(i => Math.max(0, i - 1))}
                     disabled={reviewingIdx === 0}
                     className="p-1.5 rounded-[10px] border border-black/8 text-black/30 hover:text-black/60 disabled:opacity-30 transition-colors bg-white">
@@ -746,22 +748,22 @@ export default function Home() {
             <div className="flex flex-col gap-3">
               <button
                 onClick={() => setShowPortalModal(true)}
-                className="flex items-center justify-center gap-2 bg-[#007AFF] hover:bg-[#0066DD] text-white px-4 py-3.5 rounded-[14px] text-sm font-semibold transition-colors shadow-sm shadow-[#007AFF]/20"
+                className="w-full flex items-center justify-center gap-2 bg-[#007AFF] hover:bg-[#0066DD] text-white px-4 py-3.5 rounded-[14px] text-sm font-semibold transition-colors shadow-sm shadow-[#007AFF]/20"
               >
                 <Send className="w-4 h-4" />
                 Send to Customer Portal
               </button>
-              <div className="flex gap-3">
+              <div className="flex flex-col sm:flex-row gap-3">
                 <button
                   onClick={downloadCSV}
-                  className="flex-1 flex items-center justify-center gap-2 bg-black/5 hover:bg-black/8 text-[#007AFF] px-4 py-3 rounded-[14px] text-sm font-semibold transition-colors"
+                  className="w-full sm:w-auto flex-1 flex items-center justify-center gap-2 bg-black/5 hover:bg-black/8 text-[#007AFF] px-4 py-3 rounded-[14px] text-sm font-semibold transition-colors"
                 >
                   <Download className="w-4 h-4" />
                   Download CSV
                 </button>
                 <button
                   onClick={reset}
-                  className="flex-1 flex items-center justify-center gap-2 bg-black/5 hover:bg-black/8 text-[#007AFF] px-4 py-3 rounded-[14px] text-sm font-semibold transition-colors"
+                  className="w-full sm:w-auto flex-1 flex items-center justify-center gap-2 bg-black/5 hover:bg-black/8 text-[#007AFF] px-4 py-3 rounded-[14px] text-sm font-semibold transition-colors"
                 >
                   <RotateCcw className="w-4 h-4" />
                   New plan
