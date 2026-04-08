@@ -170,7 +170,7 @@ export default function Home() {
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setPages(data.pages);
-      setSelectedPages([data.suggested_page]);
+      setSelectedPages([]);
       setUploadSessionId(data.session_id);
       setStatus("selecting");
     } catch (e: unknown) {
