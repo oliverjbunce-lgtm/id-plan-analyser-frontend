@@ -9,7 +9,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Independent Doors — Plan Analyser",
+  title: "Plan Analyser",
   description: "AI-powered door detection from building plans",
 };
 
