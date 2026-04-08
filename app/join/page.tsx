@@ -6,7 +6,7 @@ export default function JoinIndex() {
           <span className="text-[#F7C600] text-2xl font-bold">ID</span>
         </div>
         <h2 className="text-xl font-bold text-gray-900 mb-2">Access required</h2>
-        <p className="text-gray-500 text-sm">You need an invite link to access this tool. Contact Independent Doors to request access.</p>
+        <p className="text-gray-500 text-sm">You need an invite link to access this tool. Contact us to request access.</p>
       </div>
     </div>
   );
