@@ -438,12 +438,15 @@ export default function Home() {
       {/* ── Header ── */}
       <header style={{ background: '#0b1f33' }} className="px-6 h-14 flex items-center shrink-0">
         <div className="max-w-5xl mx-auto w-full flex items-center justify-between">
-          {/* ID Logo */}
-          <img
-            src="https://iddoors.co.nz/wp-content/uploads/2023/11/logo.svg"
-            alt="Independent Doors"
-            className="h-7 w-auto"
-          />
+          {/* Quoflow wordmark */}
+          <div className="flex items-center gap-2">
+            <svg width="24" height="24" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M 7 7 L 7 33 L 33 33" stroke="white" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"/>
+              <rect x="13" y="13" width="14" height="14" rx="1.5" stroke="#60B3FF" strokeWidth="1.8"/>
+              <circle cx="20" cy="20" r="3" fill="#60B3FF"/>
+            </svg>
+            <span className="text-white font-bold text-base tracking-tight">Plan Analyser</span>
+          </div>
           <div className="flex items-center gap-3">
             <span className="text-white/40 text-xs font-medium hidden sm:block">Plan Analyser</span>
             {status !== "idle" && (
@@ -792,7 +795,7 @@ export default function Home() {
       </main>
 
       <footer className="border-t border-black/5 px-6 py-4 text-center">
-        <p className="text-xs text-black/25">Independent Doors — Internal use only</p>
+        <p className="text-xs text-black/25">Quoflow — AI Floor Plan Analysis</p>
       </footer>
 
       {/* ── Toast ───────────────────────────────────────────────────────────── */}
